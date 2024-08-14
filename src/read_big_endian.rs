@@ -10,42 +10,20 @@ impl ReadBigEndian for u8 {
     }
 }
 
-impl ReadBigEndian for i16 {
-    fn read_big_endian<R: std::io::Read>(reader: &mut R) -> Self {
-        let mut bytes: [u8; 2] = [0; 2];
-        reader.read_exact(&mut bytes).unwrap();
-        i16::from_be_bytes(bytes)
-    }
+macro_rules! read_big_endian_impl {
+    ($t: ty, $n: expr) => {
+        impl ReadBigEndian for $t {
+            fn read_big_endian<R: std::io::Read>(reader: &mut R) -> Self {
+                let mut bytes: [u8; $n] = [0; $n];
+                reader.read_exact(&mut bytes).unwrap();
+                <$t>::from_be_bytes(bytes)
+            }
+        }
+    };
 }
 
-impl ReadBigEndian for i32 {
-    fn read_big_endian<R: std::io::Read>(reader: &mut R) -> Self {
-        let mut bytes: [u8; 4] = [0; 4];
-        reader.read_exact(&mut bytes).unwrap();
-        i32::from_be_bytes(bytes)
-    }
-}
-
-impl ReadBigEndian for i64 {
-    fn read_big_endian<R: std::io::Read>(reader: &mut R) -> Self {
-        let mut bytes: [u8; 8] = [0; 8];
-        reader.read_exact(&mut bytes).unwrap();
-        i64::from_be_bytes(bytes)
-    }
-}
-
-impl ReadBigEndian for f32 {
-    fn read_big_endian<R: std::io::Read>(reader: &mut R) -> Self {
-        let mut bytes: [u8; 4] = [0; 4];
-        reader.read_exact(&mut bytes).unwrap();
-        f32::from_be_bytes(bytes)
-    }
-}
-
-impl ReadBigEndian for f64 {
-    fn read_big_endian<R: std::io::Read>(reader: &mut R) -> Self {
-        let mut bytes: [u8; 8] = [0; 8];
-        reader.read_exact(&mut bytes).unwrap();
-        f64::from_be_bytes(bytes)
-    }
-}
+read_big_endian_impl!(i16, 2);
+read_big_endian_impl!(i32, 4);
+read_big_endian_impl!(i64, 8);
+read_big_endian_impl!(f32, 4);
+read_big_endian_impl!(f64, 8);
