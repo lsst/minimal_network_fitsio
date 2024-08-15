@@ -1,12 +1,8 @@
+use crate::bintable::Address;
 use crate::pixel_transform::PixelTransform;
 use ndarray::{ArrayD, ArrayViewMutD};
 
 use crate::compression::Compression;
-
-pub struct Address {
-    pub size: usize,
-    pub offset: usize,
-}
 
 pub trait TileReader<P> {
     fn address(&self) -> &Address;

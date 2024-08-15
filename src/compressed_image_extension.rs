@@ -1,9 +1,9 @@
+use crate::bintable::{Address, AddressType, FloatType, IntegerType, OffsetColumn};
 use crate::compression::{GZip1, GZip2, NoCompress};
 use crate::pixel_transform::{
     I8Transform, NoDitherQuantization, U16Transform, U32Transform, U64Transform,
 };
-use crate::tile_reader::{Address, BasicTileReader, TypedTileReader};
-use crate::{Column, FitsIntegerType, Schema};
+use crate::tile_reader::{BasicTileReader, TypedTileReader};
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Debug, PartialEq)]
@@ -27,7 +27,7 @@ pub enum QuantizationAlgorithm {
 #[derive(Clone, Debug)]
 pub struct Quantization {
     pub algorithm: QuantizationAlgorithm,
-    pub stored: FitsIntegerType,
+    pub stored: IntegerType,
     pub zero: f64,
     pub scale: f64,
     pub blank: Option<i64>,
@@ -62,35 +62,41 @@ impl TileIndex {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CompressedImageExtension {
-    schema: Schema,
     pixel_type: PixelType,
     full_shape: Vec<usize>,
     grid_shape: Vec<usize>,
     algorithm: CompressionAlgorithm,
+    compressed_data_column: OffsetColumn<AddressType>,
+    lossless_data_column: Option<(OffsetColumn<AddressType>, bool)>,
+    zscale_column: Option<OffsetColumn<FloatType>>,
+    zzero_column: Option<OffsetColumn<FloatType>>,
+    zblank_column: Option<OffsetColumn<IntegerType>>,
 }
 
 impl CompressedImageExtension {
-    pub fn from_schema(
-        schema: Schema,
+    pub fn new(
         pixel_type: PixelType,
         full_shape: Vec<usize>,
-        tile_shape: Vec<usize>,
+        grid_shape: Vec<usize>,
         algorithm: CompressionAlgorithm,
+        compressed_data_column: OffsetColumn<AddressType>,
+        lossless_data_column: Option<(OffsetColumn<AddressType>, bool)>,
+        zscale_column: Option<OffsetColumn<FloatType>>,
+        zzero_column: Option<OffsetColumn<FloatType>>,
+        zblank_column: Option<OffsetColumn<IntegerType>>,
     ) -> Self {
-        // TODO: check for consistency between schema and the rest of the spec.
-        let grid_shape = full_shape
-            .iter()
-            .zip(tile_shape.iter())
-            .map(|(&f, &t)| f.div_ceil(t))
-            .collect();
         Self {
-            schema,
             pixel_type,
             full_shape,
             grid_shape,
             algorithm,
+            compressed_data_column,
+            lossless_data_column,
+            zscale_column,
+            zzero_column,
+            zblank_column,
         }
     }
     pub fn tile_reader(&self, index: &TileIndex, row_bytes: &[u8]) -> TypedTileReader {
@@ -141,58 +147,47 @@ impl CompressedImageExtension {
 
     fn read_row(&self, row_bytes: &[u8]) -> (Address, CompressionAlgorithm, Option<Quantization>) {
         let mut algorithm: CompressionAlgorithm = self.algorithm.clone();
-        let mut address: Option<Address> = None;
         let mut quantization = match &self.pixel_type {
             PixelType::F32(quantization) => quantization.clone(),
             PixelType::F64(quantization) => quantization.clone(),
             _ => None,
         };
-        for (column, row_offset) in self.schema.columns() {
-            match column {
-                Column::COMPRESSED_DATA(pointer_type, _) => {
-                    assert!(address.is_none(), "Multiple data columns set.");
-                    address = pointer_type.read_address(row_bytes, *row_offset);
+        let address = self
+            .compressed_data_column
+            .read(row_bytes)
+            .unwrap_or_else(|| {
+                let (column, is_gzip) = self
+                    .lossless_data_column
+                    .as_ref()
+                    .expect("Empty COMPRESSED_DATA column with no alternative.");
+                if *is_gzip {
+                    algorithm = CompressionAlgorithm::GZIP_1;
+                } else {
+                    algorithm = CompressionAlgorithm::NOCOMPRESS;
                 }
-                Column::GZIP_COMPRESSED_DATA(pointer_type) => {
-                    assert!(address.is_none(), "Multiple data columns set.");
-                    address = pointer_type.read_address(row_bytes, *row_offset);
-                    if address.is_some() {
-                        algorithm = CompressionAlgorithm::GZIP_1;
-                    }
-                }
-                Column::UNCOMPRESSED_DATA(pointer_type) => {
-                    assert!(address.is_none(), "Multiple data columns set.");
-                    address = pointer_type.read_address(row_bytes, *row_offset);
-                    if address.is_some() {
-                        algorithm = CompressionAlgorithm::NOCOMPRESS;
-                    }
-                }
-                Column::ZZERO(col_type) => {
-                    quantization
-                        .as_mut()
-                        .expect("ZZERO column with no quantization")
-                        .zero = col_type.read(row_bytes, *row_offset);
-                }
-                Column::ZSCALE(col_type) => {
-                    quantization
-                        .as_mut()
-                        .expect("SCALE column with no quantization")
-                        .scale = col_type.read(row_bytes, *row_offset);
-                }
-                Column::ZBLANK(col_type) => {
-                    quantization
-                        .as_mut()
-                        .expect("BLANK column with no quantization")
-                        .blank = Some(col_type.read(row_bytes, *row_offset));
-                }
-                Column::Other(..) => {}
-            }
+                column
+                    .read(row_bytes)
+                    .expect("COMPRESSED_DATA column and lossless alternate are both empty.")
+            });
+        if let Some(zscale) = self.zscale_column.as_ref() {
+            quantization
+                .as_mut()
+                .expect("ZSCALE column with non-quantized compression.")
+                .scale = zscale.read(row_bytes);
         }
-        (
-            address.expect("No data column set."),
-            algorithm,
-            quantization,
-        )
+        if let Some(zzero) = self.zzero_column.as_ref() {
+            quantization
+                .as_mut()
+                .expect("ZZERO column with non-quantized compression.")
+                .zero = zzero.read(row_bytes);
+        }
+        if let Some(zblank) = self.zblank_column.as_ref() {
+            quantization
+                .as_mut()
+                .expect("ZBLANK column with non-quantized compression.")
+                .blank = Some(zblank.read(row_bytes));
+        }
+        (address, algorithm, quantization)
     }
 }
 
@@ -250,14 +245,14 @@ fn make_tile_reader(
             if let Some(q) = $q {
                 match q.algorithm {
                     QuantizationAlgorithm::NO_DITHER => match q.stored {
-                        FitsIntegerType::U8 => make_tile_reader_scaled!($target, $original, u8, q),
-                        FitsIntegerType::I16 => {
+                        IntegerType::U8 => make_tile_reader_scaled!($target, $original, u8, q),
+                        IntegerType::I16 => {
                             make_tile_reader_scaled!($target, $original, i16, q)
                         }
-                        FitsIntegerType::I32 => {
+                        IntegerType::I32 => {
                             make_tile_reader_scaled!($target, $original, i32, q)
                         }
-                        FitsIntegerType::I64 => {
+                        IntegerType::I64 => {
                             make_tile_reader_scaled!($target, $original, i64, q)
                         }
                     },

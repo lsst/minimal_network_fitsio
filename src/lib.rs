@@ -1,4 +1,4 @@
-mod bintable;
+pub mod bintable;
 mod compressed_image_extension;
 mod compression;
 mod lossy_from;
@@ -6,7 +6,6 @@ mod pixel_transform;
 mod read_big_endian;
 mod tile_reader;
 mod unshuffle;
-pub use bintable::{Column, FitsIntegerType, FloatType, PointerType, Schema};
 pub use compressed_image_extension::{
     CompressedImageExtension, CompressionAlgorithm, PixelType, Quantization, QuantizationAlgorithm,
     TileIndex,
